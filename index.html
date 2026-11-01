@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8">
+		<meta name="viewport" content="width=device-width, user-scalable=no, initial-scale=1.0, viewport-fit=cover">
+		<meta name="mobile-web-app-capable" content="yes">
+		<meta name="apple-mobile-web-app-capable" content="yes">
+		<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+		<meta name="apple-mobile-web-app-title" content="Chomp">
+		<title>Chomp</title>
+		<style>
+:root {
+	--safe-left: env(safe-area-inset-left, 0px);
+	--safe-top: env(safe-area-inset-top, 0px);
+	--safe-right: env(safe-area-inset-right, 0px);
+	--safe-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+#rotate, #lock {
+	position: fixed;
+	inset: 0;
+	z-index: 10;
+	display: none;
+	flex-direction: column;
+	align-items: center;
+	justify-content: center;
+	padding: 24px;
+	color: #fff7e2;
+	background: #0d3a4a;
+	font: 600 22px -apple-system, 'Noto Sans', Arial, sans-serif;
+	text-align: center;
+}
+
+#lock.open {
+	display: flex;
+}
+
+/* iOS can't hold a web app in landscape, so ask for the turn instead. */
+@media (orientation: portrait) and (pointer: coarse) {
+	#rotate {
+		display: flex;
+		z-index: 11;
+	}
+}
+
+#lock input, #lock button {
+	box-sizing: border-box;
+	width: 280px;
+	margin-top: 14px;
+	padding: 12px;
+	border: 0;
+	border-radius: 14px;
+	/* Under 16px, Safari zooms the page in when the box is tapped. */
+	font: 600 18px -apple-system, 'Noto Sans', Arial, sans-serif;
+}
+
+#lock button {
+	color: white;
+	background: #ff7f6b;
+}
+
+#lock-wrong {
+	min-height: 1.4em;
+	margin-top: 10px;
+	color: #ffb3a6;
+	font-size: 16px;
+}
+
+html, body, #canvas {
+	margin: 0;
+	padding: 0;
+	border: 0;
+}
+
+body {
+	color: white;
+	background-color: black;
+	overflow: hidden;
+	touch-action: none;
+}
+
+#canvas {
+	display: block;
+}
+
+#canvas:focus {
+	outline: none;
+}
+
+#status, #status-splash, #status-progress {
+	position: absolute;
+	left: 0;
+	right: 0;
+}
+
+#status, #status-splash {
+	top: 0;
+	bottom: 0;
+}
+
+#status {
+	background-color: #0d4d6b;
+	display: flex;
+	flex-direction: column;
+	justify-content: center;
+	align-items: center;
+	visibility: hidden;
+}
+
+#status-splash {
+	max-height: 100%;
+	max-width: 100%;
+	margin: auto;
+}
+
+#status-splash.show-image--false {
+	display: none;
+}
+
+#status-splash.fullsize--true {
+	height: 100%;
+	width: 100%;
+	object-fit: contain;
+}
+
+#status-splash.use-filter--false {
+	image-rendering: pixelated;
+}
+
+#status-progress, #status-notice {
+	display: none;
+}
+
+#status-progress {
+	bottom: 10%;
+	width: 50%;
+	margin: 0 auto;
+}
+
+#status-notice {
+	background-color: #5b3943;
+	border-radius: 0.5rem;
+	border: 1px solid #9b3943;
+	color: #e0e0e0;
+	font-family: 'Noto Sans', 'Droid Sans', Arial, sans-serif;
+	line-height: 1.3;
+	margin: 0 2rem;
+	overflow: hidden;
+	padding: 1rem;
+	text-align: center;
+	z-index: 1;
+}
+		</style>
+		<link id="-gd-engine-icon" rel="icon" type="image/png" href="index.icon.png" />
+<link rel="apple-touch-icon" href="index.apple-touch-icon.png"/>
+<link rel="manifest" href="index.manifest.json">
+
+	</head>
+	<body>
+		<canvas id="canvas">
+			Your browser does not support the canvas tag.
+		</canvas>
+
+		<noscript>
+			Your browser does not support JavaScript.
+		</noscript>
+
+		<div id="status">
+			<img id="status-splash" class="show-image--false fullsize--true use-filter--true" src="index.png" alt="">
+			<progress id="status-progress"></progress>
+			<div id="status-notice"></div>
+		</div>
+
+		<div id="rotate">Turn your phone sideways to play</div>
+		<form id="lock" autocomplete="on">
+			<div>Chomp is private</div>
+			<input id="lock-name" type="text" name="username" value="chomp" autocomplete="username" hidden>
+			<input id="lock-password" type="password" name="password" placeholder="Password" autocomplete="current-password" required>
+			<button type="submit">Unlock</button>
+			<div id="lock-wrong"></div>
+		</form>
+
+		<script>
+// The game's data is encrypted (tests/web_lock.js) and only opens with the password.
+// The file is laid out as: 16 bytes of salt, 12 of IV, then the AES-GCM ciphertext.
+(function () {
+	const SAVED = 'chomp-password';
+	const ROUNDS = 200000;
+	const plainFetch = window.fetch.bind(window);
+
+	function saved() {
+		try {
+			return localStorage.getItem(SAVED);
+		} catch (err) {
+			return null;
+		}
+	}
+
+	function remember(password) {
+		try {
+			if (password === null) {
+				localStorage.removeItem(SAVED);
+			} else {
+				localStorage.setItem(SAVED, password);
+			}
+		} catch (err) {
+			// Private browsing: it just asks again next time.
+		}
+	}
+
+	function ask(wrong) {
+		const form = document.getElementById('lock');
+		const box = document.getElementById('lock-password');
+		document.getElementById('lock-wrong').textContent = wrong ? 'That password is not right.' : '';
+		box.value = '';
+		form.classList.add('open');
+		return new Promise((resolve) => {
+			form.addEventListener('submit', (event) => {
+				event.preventDefault();
+				form.classList.remove('open');
+				resolve(box.value);
+			}, { once: true });
+		});
+	}
+
+	async function open(data, password) {
+		const material = await crypto.subtle.importKey('raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveKey']);
+		const key = await crypto.subtle.deriveKey(
+			{ name: 'PBKDF2', hash: 'SHA-256', salt: data.subarray(0, 16), iterations: ROUNDS },
+			material, { name: 'AES-GCM', length: 256 }, false, ['decrypt']);
+		return crypto.subtle.decrypt({ name: 'AES-GCM', iv: data.subarray(16, 28) }, key, data.subarray(28));
+	}
+
+	window.fetch = async function (input, init) {
+		const url = typeof input === 'string' ? input : String(input.url || input);
+		if (!url.split('?')[0].endsWith('.pck')) {
+			return plainFetch(input, init);
+		}
+		const response = await plainFetch(input, init);
+		if (!response.ok) {
+			return response;
+		}
+		const data = new Uint8Array(await response.arrayBuffer());
+		let password = saved();
+		let wrong = false;
+		for (;;) {
+			if (password === null) {
+				password = await ask(wrong);
+			}
+			try {
+				const plain = await open(data, password);
+				remember(password);
+				return new Response(plain, { status: 200, headers: { 'Content-Type': 'application/octet-stream', 'Content-Length': String(plain.byteLength) } });
+			} catch (err) {
+				remember(null);
+				password = null;
+				wrong = true;
+			}
+		}
+	};
+}());
+
+// The notch and home bar, as fractions of the screen: left, top, right, bottom.
+window.chompSafeArea = function () {
+	const style = getComputedStyle(document.documentElement);
+	const inset = (name) => parseFloat(style.getPropertyValue(name)) || 0;
+	const w = window.innerWidth;
+	const h = window.innerHeight;
+	return [inset('--safe-left') / w, inset('--safe-top') / h, inset('--safe-right') / w, inset('--safe-bottom') / h].join(',');
+};
+		</script>
+		<script src="index.js"></script>
+		<script>
+const GODOT_CONFIG = {"args":[],"canvasResizePolicy":2,"emscriptenPoolSize":8,"ensureCrossOriginIsolationHeaders":false,"executable":"index","experimentalVK":true,"fileSizes":{"index.pck":559088,"index.wasm":32537295},"focusCanvas":true,"gdextensionLibs":[],"godotPoolSize":4,"serviceWorker":"index.service.worker.js"};
+const GODOT_THREADS_ENABLED = false;
+const engine = new Engine(GODOT_CONFIG);
+
+(function () {
+	const statusOverlay = document.getElementById('status');
+	const statusProgress = document.getElementById('status-progress');
+	const statusNotice = document.getElementById('status-notice');
+
+	let initializing = true;
+	let statusMode = '';
+
+	function setStatusMode(mode) {
+		if (statusMode === mode || !initializing) {
+			return;
+		}
+		if (mode === 'hidden') {
+			statusOverlay.remove();
+			initializing = false;
+			return;
+		}
+		statusOverlay.style.visibility = 'visible';
+		statusProgress.style.display = mode === 'progress' ? 'block' : 'none';
+		statusNotice.style.display = mode === 'notice' ? 'block' : 'none';
+		statusMode = mode;
+	}
+
+	function setStatusNotice(text) {
+		while (statusNotice.lastChild) {
+			statusNotice.removeChild(statusNotice.lastChild);
+		}
+		const lines = text.split('\n');
+		lines.forEach((line) => {
+			statusNotice.appendChild(document.createTextNode(line));
+			statusNotice.appendChild(document.createElement('br'));
+		});
+	}
+
+	function displayFailureNotice(err) {
+		console.error(err);
+		if (err instanceof Error) {
+			setStatusNotice(err.message);
+		} else if (typeof err === 'string') {
+			setStatusNotice(err);
+		} else {
+			setStatusNotice('An unknown error occurred.');
+		}
+		setStatusMode('notice');
+		initializing = false;
+	}
+
+	const missing = Engine.getMissingFeatures({
+		threads: GODOT_THREADS_ENABLED,
+	});
+
+	if (missing.length !== 0) {
+		if (GODOT_CONFIG['serviceWorker'] && GODOT_CONFIG['ensureCrossOriginIsolationHeaders'] && 'serviceWorker' in navigator) {
+			let serviceWorkerRegistrationPromise;
+			try {
+				serviceWorkerRegistrationPromise = navigator.serviceWorker.getRegistration();
+			} catch (err) {
+				serviceWorkerRegistrationPromise = Promise.reject(new Error('Service worker registration failed.'));
+			}
+			// There's a chance that installing the service worker would fix the issue
+			Promise.race([
+				serviceWorkerRegistrationPromise.then((registration) => {
+					if (registration != null) {
+						return Promise.reject(new Error('Service worker already exists.'));
+					}
+					return registration;
+				}).then(() => engine.installServiceWorker()),
+				// For some reason, `getRegistration()` can stall
+				new Promise((resolve) => {
+					setTimeout(() => resolve(), 2000);
+				}),
+			]).then(() => {
+				// Reload if there was no error.
+				window.location.reload();
+			}).catch((err) => {
+				console.error('Error while registering service worker:', err);
+			});
+		} else {
+			// Display the message as usual
+			const missingMsg = 'Error\nThe following features required to run Godot projects on the Web are missing:\n';
+			displayFailureNotice(missingMsg + missing.join('\n'));
+		}
+	} else {
+		setStatusMode('progress');
+		engine.startGame({
+			'onProgress': function (current, total) {
+				if (current > 0 && total > 0) {
+					statusProgress.value = current;
+					statusProgress.max = total;
+				} else {
+					statusProgress.removeAttribute('value');
+					statusProgress.removeAttribute('max');
+				}
+			},
+		}).then(() => {
+			setStatusMode('hidden');
+		}, displayFailureNotice);
+	}
+}());
+		</script>
+	</body>
+</html>
+
