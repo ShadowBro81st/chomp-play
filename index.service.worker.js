@@ -4,7 +4,7 @@
 // Incrementing CACHE_VERSION will kick off the install event and force
 // previously cached resources to be updated from the network.
 /** @type {string} */
-const CACHE_VERSION = '1793505651|4046809';
+const CACHE_VERSION = '1793684063|3829159';
 /** @type {string} */
 const CACHE_PREFIX = 'Chomp-sw-cache-';
 const CACHE_NAME = CACHE_PREFIX + CACHE_VERSION;
